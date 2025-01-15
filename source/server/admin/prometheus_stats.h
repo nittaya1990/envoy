@@ -8,6 +8,8 @@
 #include "envoy/stats/histogram.h"
 #include "envoy/stats/stats.h"
 
+#include "source/server/admin/stats_params.h"
+
 namespace Envoy {
 namespace Server {
 /**
@@ -25,14 +27,20 @@ public:
   static uint64_t statsAsPrometheus(const std::vector<Stats::CounterSharedPtr>& counters,
                                     const std::vector<Stats::GaugeSharedPtr>& gauges,
                                     const std::vector<Stats::ParentHistogramSharedPtr>& histograms,
-                                    Buffer::Instance& response, const bool used_only,
-                                    const absl::optional<std::regex>& regex,
+                                    const std::vector<Stats::TextReadoutSharedPtr>& text_readouts,
+                                    const Upstream::ClusterManager& cluster_manager,
+                                    Buffer::Instance& response, const StatsParams& params,
                                     const Stats::CustomStatNamespaces& custom_namespaces);
   /**
    * Format the given tags, returning a string as a comma-separated list
    * of <tag_name>="<tag_value>" pairs.
    */
   static std::string formattedTags(const std::vector<Stats::Tag>& tags);
+
+  /**
+   * Validate the given params, returning an error on invalid arguments
+   */
+  static absl::Status validateParams(const StatsParams& params);
 
   /**
    * Format the given metric name, and prefixed with "envoy_" if it does not have a custom

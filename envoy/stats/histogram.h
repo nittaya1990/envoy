@@ -70,6 +70,12 @@ public:
   virtual const std::vector<uint64_t>& computedBuckets() const PURE;
 
   /**
+   * Returns version of computedBuckets() with disjoint buckets. This vector is
+   * guaranteed to be the same length as supportedBuckets().
+   */
+  virtual std::vector<uint64_t> computeDisjointBuckets() const PURE;
+
+  /**
    * Returns number of values during the period. This number may be an approximation
    * of the number of samples in the histogram, it is not guaranteed that this will be
    * 100% the number of samples observed.
@@ -80,6 +86,12 @@ public:
    * Returns sum of all values during the period.
    */
   virtual double sampleSum() const PURE;
+
+  /**
+   * Returns the count of values which are out of the boundaries of the histogram bins.
+   * I.e., the count of values in the (bound_of_last_bucket, +inf) bucket.
+   */
+  virtual uint64_t outOfBoundCount() const PURE;
 };
 
 /**
@@ -155,12 +167,31 @@ public:
   /**
    * Returns the quantile summary representation.
    */
-  virtual const std::string quantileSummary() const PURE;
+  virtual std::string quantileSummary() const PURE;
 
   /**
    * Returns the bucket summary representation.
    */
-  virtual const std::string bucketSummary() const PURE;
+  virtual std::string bucketSummary() const PURE;
+
+  // Holds detailed value and counts for a histogram bucket.
+  struct Bucket {
+    double lower_bound_{0}; // Bound of bucket that's closest to zero.
+    double width_{0};
+    uint64_t count_{0};
+  };
+
+  /**
+   * @return a vector of histogram buckets collected since binary start or reset.
+   */
+  virtual std::vector<Bucket> detailedTotalBuckets() const PURE;
+
+  /**
+   * @return bucket data collected since the most recent stat sink. Note that
+   *         the number of interval buckets is likely to be much smaller than
+   *         the number of detailed buckets.
+   */
+  virtual std::vector<Bucket> detailedIntervalBuckets() const PURE;
 };
 
 using ParentHistogramSharedPtr = RefcountPtr<ParentHistogram>;

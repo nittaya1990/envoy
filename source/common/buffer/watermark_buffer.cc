@@ -1,5 +1,4 @@
 #include "source/common/buffer/watermark_buffer.h"
-#include "watermark_buffer.h"
 
 #include <cstdint>
 #include <memory>
@@ -67,6 +66,12 @@ void WatermarkBuffer::move(Instance& rhs, uint64_t length) {
   checkHighAndOverflowWatermarks();
 }
 
+void WatermarkBuffer::move(Instance& rhs, uint64_t length,
+                           bool reset_drain_trackers_and_accounting) {
+  OwnedImpl::move(rhs, length, reset_drain_trackers_and_accounting);
+  checkHighAndOverflowWatermarks();
+}
+
 SliceDataPtr WatermarkBuffer::extractMutableFrontSlice() {
   auto result = OwnedImpl::extractMutableFrontSlice();
   checkLowWatermark();
@@ -105,13 +110,18 @@ void WatermarkBuffer::appendSliceForTest(absl::string_view data) {
   appendSliceForTest(data.data(), data.size());
 }
 
-void WatermarkBuffer::setWatermarks(uint32_t high_watermark) {
-  uint32_t overflow_watermark_multiplier =
-      Runtime::getInteger("envoy.buffer.overflow_multiplier", 0);
+size_t WatermarkBuffer::addFragments(absl::Span<const absl::string_view> fragments) {
+  size_t total_size_to_write = OwnedImpl::addFragments(fragments);
+  checkHighAndOverflowWatermarks();
+  return total_size_to_write;
+}
+
+void WatermarkBuffer::setWatermarks(uint32_t high_watermark,
+                                    uint32_t overflow_watermark_multiplier) {
   if (overflow_watermark_multiplier > 0 &&
       (static_cast<uint64_t>(overflow_watermark_multiplier) * high_watermark) >
           std::numeric_limits<uint32_t>::max()) {
-    ENVOY_LOG_MISC(debug, "Error setting overflow threshold: envoy.buffer.overflow_multiplier * "
+    ENVOY_LOG_MISC(debug, "Error setting overflow threshold: overflow_watermark_multiplier * "
                           "high_watermark is overflowing. Disabling overflow watermark.");
     overflow_watermark_multiplier = 0;
   }
@@ -198,22 +208,22 @@ uint64_t WatermarkBufferFactory::resetAccountsGivenPressure(float pressure) {
   const uint32_t buckets_to_clear = std::min<uint32_t>(
       std::floor(pressure * BufferMemoryAccountImpl::NUM_MEMORY_CLASSES_) + 1, 8);
 
-  uint32_t last_bucket_to_clear = BufferMemoryAccountImpl::NUM_MEMORY_CLASSES_ - buckets_to_clear;
-  ENVOY_LOG_MISC(warn, "resetting streams in buckets >= {}", last_bucket_to_clear);
-
   // Clear buckets, prioritizing the buckets with larger streams.
   uint32_t num_streams_reset = 0;
+  uint32_t num_buckets_reset = 0;
   for (uint32_t buckets_cleared = 0; buckets_cleared < buckets_to_clear; ++buckets_cleared) {
     const uint32_t bucket_to_clear =
         BufferMemoryAccountImpl::NUM_MEMORY_CLASSES_ - buckets_cleared - 1;
-    ENVOY_LOG_MISC(warn, "resetting {} streams in bucket {}.",
-                   size_class_account_sets_[bucket_to_clear].size(), bucket_to_clear);
+    absl::flat_hash_set<BufferMemoryAccountSharedPtr>& bucket =
+        size_class_account_sets_[bucket_to_clear];
 
-    auto it = size_class_account_sets_[bucket_to_clear].begin();
-    while (it != size_class_account_sets_[bucket_to_clear].end()) {
-      if (num_streams_reset >= kMaxNumberOfStreamsToResetPerInvocation) {
-        return num_streams_reset;
-      }
+    if (bucket.empty()) {
+      continue;
+    }
+    ++num_buckets_reset;
+
+    auto it = bucket.begin();
+    while (it != bucket.end() && num_streams_reset < kMaxNumberOfStreamsToResetPerInvocation) {
       auto next = std::next(it);
       // This will trigger an erase, which avoids rehashing and invalidates the
       // iterator *it*. *next* is still valid.
@@ -222,7 +232,10 @@ uint64_t WatermarkBufferFactory::resetAccountsGivenPressure(float pressure) {
       ++num_streams_reset;
     }
   }
-
+  if (num_buckets_reset > 0) {
+    ENVOY_LOG_MISC(warn, "resetting {} streams in {} buckets, {} empty buckets", num_streams_reset,
+                   num_buckets_reset, buckets_to_clear - num_buckets_reset);
+  }
   return num_streams_reset;
 }
 

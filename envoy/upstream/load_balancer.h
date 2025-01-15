@@ -4,18 +4,29 @@
 #include <memory>
 
 #include "envoy/common/pure.h"
+#include "envoy/config/cluster/v3/cluster.pb.h"
 #include "envoy/network/transport_socket.h"
 #include "envoy/router/router.h"
+#include "envoy/stream_info/stream_info.h"
 #include "envoy/upstream/types.h"
 #include "envoy/upstream/upstream.h"
 
+#include "xds/data/orca/v3/orca_load_report.pb.h"
+
 namespace Envoy {
+namespace Server {
+namespace Configuration {
+class ServerFactoryContext;
+} // namespace Configuration
+} // namespace Server
 namespace Http {
 namespace ConnectionPool {
 class ConnectionLifetimeCallbacks;
 } // namespace ConnectionPool
 } // namespace Http
 namespace Upstream {
+
+using ClusterProto = envoy::config::cluster::v3::Cluster;
 
 /**
  * Context information passed to a load balancer to use when choosing a host. Not all load
@@ -44,6 +55,12 @@ public:
    * balancing.
    */
   virtual const Network::Connection* downstreamConnection() const PURE;
+
+  /**
+   * @return const StreamInfo* the incoming request stream info or nullptr to use during load
+   * balancing.
+   */
+  virtual StreamInfo::StreamInfo* requestStreamInfo() const PURE;
 
   /**
    * @return const Http::HeaderMap* the incoming headers or nullptr to use during load
@@ -89,22 +106,11 @@ public:
    */
   virtual Network::TransportSocketOptionsConstSharedPtr upstreamTransportSocketOptions() const PURE;
 
-  // Using uint32_t to express expected status of override host. Every bit in the OverrideHostStatus
-  // represent an enum value of Host::Health. The specific correspondence is shown below:
-  //
-  // * 0b001: Host::Health::Unhealthy
-  // * 0b010: Host::Health::Degraded
-  // * 0b100: Host::Health::Healthy
-  //
-  // If multiple bit fields are set, it is acceptable as long as the status of override host is in
-  // any of these statuses.
-  using OverrideHostStatus = uint32_t;
-  using OverrideHost = std::pair<std::string, OverrideHostStatus>;
-
+  using OverrideHost = std::pair<absl::string_view, bool>;
   /**
    * Returns the host the load balancer should select directly. If the expected host exists and
-   * the health status of the host matches the expectation, the load balancer can bypass the load
-   * balancing algorithm and return the corresponding host directly.
+   * the host can be selected directly, the load balancer can bypass the load balancing algorithm
+   * and return the corresponding host directly.
    */
   virtual absl::optional<OverrideHost> overrideHostToSelect() const PURE;
 };
@@ -162,6 +168,16 @@ public:
 using LoadBalancerPtr = std::unique_ptr<LoadBalancer>;
 
 /**
+ * Necessary parameters for creating a worker local load balancer.
+ */
+struct LoadBalancerParams {
+  // The worker local priority set of the target cluster.
+  const PrioritySet& priority_set;
+  // The worker local priority set of the local cluster.
+  const PrioritySet* local_priority_set{};
+};
+
+/**
  * Factory for load balancers.
  */
 class LoadBalancerFactory {
@@ -169,9 +185,14 @@ public:
   virtual ~LoadBalancerFactory() = default;
 
   /**
-   * @return LoadBalancerPtr a new load balancer.
+   * @return LoadBalancerPtr a new worker local load balancer.
    */
-  virtual LoadBalancerPtr create() PURE;
+  virtual LoadBalancerPtr create(LoadBalancerParams params) PURE;
+
+  /**
+   * @return bool whether the load balancer should be recreated when the host set changes.
+   */
+  virtual bool recreateOnHostChange() const { return true; }
 };
 
 using LoadBalancerFactorySharedPtr = std::shared_ptr<LoadBalancerFactory>;
@@ -218,30 +239,76 @@ public:
    * instantiate any needed structured and prepare for further updates. The cluster manager
    * will do this at the appropriate time.
    */
-  virtual void initialize() PURE;
+  virtual absl::Status initialize() PURE;
 };
 
 using ThreadAwareLoadBalancerPtr = std::unique_ptr<ThreadAwareLoadBalancer>;
 
+/*
+ * Parsed load balancer configuration that will be used to create load balancer.
+ */
+class LoadBalancerConfig {
+public:
+  virtual ~LoadBalancerConfig() = default;
+};
+using LoadBalancerConfigPtr = std::unique_ptr<LoadBalancerConfig>;
+
 /**
- * Factory for (thread-aware) load balancers. To support a load balancing policy of
+ * Factory config for load balancers. To support a load balancing policy of
  * LOAD_BALANCING_POLICY_CONFIG, at least one load balancer factory corresponding to a policy in
  * load_balancing_policy must be registered with Envoy. Envoy will use the first policy for which
  * it has a registered factory.
  */
-class TypedLoadBalancerFactory : public Config::UntypedFactory {
+class TypedLoadBalancerFactory : public Config::TypedFactory {
 public:
   ~TypedLoadBalancerFactory() override = default;
 
   /**
    * @return ThreadAwareLoadBalancerPtr a new thread-aware load balancer.
+   *
+   * @param lb_config supplies the parsed config of the load balancer.
+   * @param cluster_info supplies the cluster info.
+   * @param priority_set supplies the priority set on the main thread.
+   * @param runtime supplies the runtime loader.
+   * @param random supplies the random generator.
+   * @param time_source supplies the time source.
    */
   virtual ThreadAwareLoadBalancerPtr
-  create(const PrioritySet& priority_set, ClusterStats& stats, Stats::Scope& stats_scope,
-         Runtime::Loader& runtime, Random::RandomGenerator& random,
-         const ::envoy::config::cluster::v3::LoadBalancingPolicy_Policy& lb_policy) PURE;
+  create(OptRef<const LoadBalancerConfig> lb_config, const ClusterInfo& cluster_info,
+         const PrioritySet& priority_set, Runtime::Loader& runtime, Random::RandomGenerator& random,
+         TimeSource& time_source) PURE;
 
-  std::string category() const override { return "envoy.load_balancers"; }
+  /**
+   * This method is used to validate and create load balancer config from typed proto config.
+   *
+   * @return LoadBalancerConfigPtr a new load balancer config or error.
+   *
+   * @param factory_context supplies the load balancer factory context.
+   * @param config supplies the typed proto config of the load balancer. A dynamic_cast could
+   *        be performed on the config to the expected proto type.
+   */
+  virtual absl::StatusOr<LoadBalancerConfigPtr>
+  loadConfig(Server::Configuration::ServerFactoryContext& factory_context,
+             const Protobuf::Message& config) PURE;
+
+  /**
+   * This method is used to validate and create load balancer config from legacy proto config.
+   * This method is only used for backwards compatibility with the legacy cluster config.
+   *
+   * @return LoadBalancerConfigPtr a new load balancer config or error.
+   *
+   * @param factory_context supplies the load balancer factory context.
+   * @param cluster supplies the legacy proto config of the cluster.
+   */
+  virtual absl::StatusOr<LoadBalancerConfigPtr>
+  loadLegacy(Server::Configuration::ServerFactoryContext& factory_context,
+             const ClusterProto& cluster) {
+    UNREFERENCED_PARAMETER(cluster);
+    UNREFERENCED_PARAMETER(factory_context);
+    return nullptr;
+  }
+
+  std::string category() const override { return "envoy.load_balancing_policies"; }
 };
 
 } // namespace Upstream

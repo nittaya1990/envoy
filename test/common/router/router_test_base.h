@@ -14,6 +14,7 @@
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/router/mocks.h"
 #include "test/mocks/runtime/mocks.h"
+#include "test/mocks/server/server_factory_context.h"
 #include "test/mocks/upstream/cluster_manager.h"
 
 #include "gmock/gmock.h"
@@ -23,6 +24,7 @@ namespace Envoy {
 namespace Router {
 
 using ::testing::NiceMock;
+using ::testing::Return;
 
 class RouterTestFilter : public Filter {
 public:
@@ -30,13 +32,18 @@ public:
   // Filter
   RetryStatePtr createRetryState(const RetryPolicy&, Http::RequestHeaderMap&,
                                  const Upstream::ClusterInfo&, const VirtualCluster*,
-                                 Runtime::Loader&, Random::RandomGenerator&, Event::Dispatcher&,
-                                 TimeSource&, Upstream::ResourcePriority) override {
+                                 RouteStatsContextOptRef,
+                                 Server::Configuration::CommonFactoryContext&, Event::Dispatcher&,
+                                 Upstream::ResourcePriority) override {
     EXPECT_EQ(nullptr, retry_state_);
     retry_state_ = new NiceMock<MockRetryState>();
     if (reject_all_hosts_) {
       // Set up RetryState to always reject the host
       ON_CALL(*retry_state_, shouldSelectAnotherHost(_)).WillByDefault(Return(true));
+    }
+    if (retry_425_response_) {
+      ON_CALL(*retry_state_, wouldRetryFromRetriableStatusCode(Http::Code::TooEarly))
+          .WillByDefault(Return(true));
     }
     return RetryStatePtr{retry_state_};
   }
@@ -48,12 +55,14 @@ public:
   NiceMock<Network::MockConnection> downstream_connection_;
   MockRetryState* retry_state_{};
   bool reject_all_hosts_ = false;
+  bool retry_425_response_ = false;
 };
 
 class RouterTestBase : public testing::Test {
 public:
   RouterTestBase(bool start_child_span, bool suppress_envoy_headers,
                  bool suppress_grpc_request_failure_code_stats,
+                 bool flush_upstream_log_on_upstream_stream,
                  Protobuf::RepeatedPtrField<std::string> strict_headers_to_check);
 
   void expectResponseTimerCreate();
@@ -78,6 +87,11 @@ public:
   void testAppendUpstreamHost(absl::optional<Http::LowerCaseString> hostname_header_name,
                               absl::optional<Http::LowerCaseString> host_address_header_name);
   void testDoNotForward(absl::optional<Http::LowerCaseString> not_forwarded_header_name);
+  void expectNewStreamWithImmediateEncoder(Http::RequestEncoder& encoder,
+                                           Http::ResponseDecoder** decoder,
+                                           Http::Protocol protocol);
+  // Recreates filter under test after any values that affect its constructor were changed.
+  void recreateFilter();
 
   Event::SimulatedTimeSystem test_time_;
   std::string upstream_zone_{"to_az"};
@@ -85,23 +99,23 @@ public:
   envoy::config::core::v3::HttpProtocolOptions common_http_protocol_options_;
   NiceMock<Stats::MockIsolatedStatsStore> stats_store_;
   Stats::StatNamePool pool_;
-  NiceMock<Upstream::MockClusterManager> cm_;
-  NiceMock<Runtime::MockLoader> runtime_;
-  NiceMock<Random::MockRandomGenerator> random_;
+  NiceMock<Server::Configuration::MockServerFactoryContext> factory_context_;
+  NiceMock<Upstream::MockClusterManager>& cm_{factory_context_.cluster_manager_};
+  NiceMock<Runtime::MockLoader>& runtime_{factory_context_.runtime_loader_};
+  NiceMock<Random::MockRandomGenerator>& random_{factory_context_.api_.random_};
   Envoy::ConnectionPool::MockCancellable cancellable_;
   Http::ContextImpl http_context_;
   Router::ContextImpl router_context_;
   NiceMock<Http::MockStreamDecoderFilterCallbacks> callbacks_;
   MockShadowWriter* shadow_writer_;
-  NiceMock<LocalInfo::MockLocalInfo> local_info_;
-  FilterConfig config_;
-  RouterTestFilter router_;
+  FilterConfigSharedPtr config_;
+  std::unique_ptr<RouterTestFilter> router_;
   Event::MockTimer* response_timeout_{};
   Event::MockTimer* per_try_timeout_{};
   Event::MockTimer* per_try_idle_timeout_{};
   Event::MockTimer* max_stream_duration_timer_{};
   Network::Address::InstanceConstSharedPtr host_address_{
-      Network::Utility::resolveUrl("tcp://10.0.0.5:9211")};
+      *Network::Utility::resolveUrl("tcp://10.0.0.5:9211")};
   NiceMock<Http::MockRequestEncoder> original_encoder_;
   NiceMock<Http::MockRequestEncoder> second_encoder_;
   NiceMock<Network::MockConnection> connection_;

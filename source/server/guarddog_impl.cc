@@ -21,7 +21,7 @@
 #include "source/common/common/logger.h"
 #include "source/common/config/utility.h"
 #include "source/common/protobuf/utility.h"
-#include "source/common/stats/symbol_table_impl.h"
+#include "source/common/stats/symbol_table.h"
 #include "source/server/watchdog_impl.h"
 
 #include "absl/synchronization/mutex.h"
@@ -163,6 +163,8 @@ void GuardDogImpl::step() {
         multi_kill_threads.emplace_back(tid, last_checkin);
 
         if (multi_kill_threads.size() >= required_for_multi_kill) {
+          ENVOY_LOG_MISC(error, "Watchdog MULTIKILL as {} threads are stuck.",
+                         multi_kill_threads.size());
           invokeGuardDogActions(WatchDogAction::MULTIKILL, multi_kill_threads, now);
         }
       }

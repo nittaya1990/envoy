@@ -8,7 +8,6 @@
 
 #include "test/mocks/common.h"
 #include "test/test_common/environment.h"
-#include "test/test_common/test_runtime.h"
 #include "test/test_common/utility.h"
 
 #include "gtest/gtest.h"
@@ -72,7 +71,6 @@ public:
 
 protected:
   Api::OsSysCalls& os_sys_calls_;
-  TestScopedRuntime scoped_runtime_;
 };
 
 INSTANTIATE_TEST_SUITE_P(IpVersions, FileEventImplActivateTest,
@@ -93,7 +91,7 @@ TEST_P(FileEventImplActivateTest, Activate) {
 
   Event::FileEventPtr file_event = dispatcher->createFileEvent(
       fd,
-      [&](uint32_t events) -> void {
+      [&](uint32_t events) {
         if (events & FileReadyType::Read) {
           read_event.ready();
         }
@@ -101,6 +99,7 @@ TEST_P(FileEventImplActivateTest, Activate) {
         if (events & FileReadyType::Write) {
           write_event.ready();
         }
+        return absl::OkStatus();
       },
       trigger, FileReadyType::Read | FileReadyType::Write);
 
@@ -128,7 +127,7 @@ TEST_P(FileEventImplActivateTest, ActivateChaining) {
 
   Event::FileEventPtr file_event = dispatcher->createFileEvent(
       fd,
-      [&](uint32_t events) -> void {
+      [&](uint32_t events) {
         fd_event.ready();
         if (events & FileReadyType::Read) {
           read_event.ready();
@@ -138,6 +137,7 @@ TEST_P(FileEventImplActivateTest, ActivateChaining) {
         if (events & FileReadyType::Write) {
           write_event.ready();
         }
+        return absl::OkStatus();
       },
       trigger, FileReadyType::Read | FileReadyType::Write);
 
@@ -182,7 +182,7 @@ TEST_P(FileEventImplActivateTest, SetEnableCancelsActivate) {
 
   Event::FileEventPtr file_event = dispatcher->createFileEvent(
       fd,
-      [&](uint32_t events) -> void {
+      [&](uint32_t events) {
         fd_event.ready();
         if (events & FileReadyType::Read) {
           read_event.ready();
@@ -193,6 +193,7 @@ TEST_P(FileEventImplActivateTest, SetEnableCancelsActivate) {
         if (events & FileReadyType::Write) {
           write_event.ready();
         }
+        return absl::OkStatus();
       },
       trigger, FileReadyType::Read | FileReadyType::Write);
 
@@ -227,7 +228,7 @@ TEST_F(FileEventImplTest, EdgeTrigger) {
 
   Event::FileEventPtr file_event = dispatcher_->createFileEvent(
       fds_[0],
-      [&](uint32_t events) -> void {
+      [&](uint32_t events) {
         if (events & FileReadyType::Read) {
           read_event.ready();
         }
@@ -235,6 +236,7 @@ TEST_F(FileEventImplTest, EdgeTrigger) {
         if (events & FileReadyType::Write) {
           write_event.ready();
         }
+        return absl::OkStatus();
       },
       FileTriggerType::Edge, FileReadyType::Read | FileReadyType::Write);
 
@@ -250,7 +252,7 @@ TEST_F(FileEventImplTest, LevelTrigger) {
   int count = 0;
   Event::FileEventPtr file_event = dispatcher_->createFileEvent(
       fds_[0],
-      [&](uint32_t events) -> void {
+      [&](uint32_t events) {
         ASSERT(count > 0);
         if (--count == 0) {
           dispatcher_->exit();
@@ -262,6 +264,7 @@ TEST_F(FileEventImplTest, LevelTrigger) {
         if (events & FileReadyType::Write) {
           write_event.ready();
         }
+        return absl::OkStatus();
       },
       FileTriggerType::Level, FileReadyType::Read | FileReadyType::Write);
 
@@ -307,7 +310,7 @@ TEST_F(FileEventImplTest, SetEnabled) {
 
   Event::FileEventPtr file_event = dispatcher_->createFileEvent(
       fds_[0],
-      [&](uint32_t events) -> void {
+      [&](uint32_t events) {
         if (events & FileReadyType::Read) {
           read_event.ready();
         }
@@ -315,6 +318,7 @@ TEST_F(FileEventImplTest, SetEnabled) {
         if (events & FileReadyType::Write) {
           write_event.ready();
         }
+        return absl::OkStatus();
       },
       trigger, FileReadyType::Read | FileReadyType::Write);
 
@@ -394,7 +398,7 @@ TEST_F(FileEventImplTest, RegisterIfEmulatedEdge) {
 
   Event::FileEventPtr file_event = dispatcher_->createFileEvent(
       fds_[0],
-      [&](uint32_t events) -> void {
+      [&](uint32_t events) {
         if (events & FileReadyType::Read) {
           read_event.ready();
         }
@@ -402,6 +406,7 @@ TEST_F(FileEventImplTest, RegisterIfEmulatedEdge) {
         if (events & FileReadyType::Write) {
           write_event.ready();
         }
+        return absl::OkStatus();
       },
       trigger, FileReadyType::Read | FileReadyType::Write);
 

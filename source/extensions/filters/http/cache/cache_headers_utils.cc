@@ -2,6 +2,7 @@
 
 #include <array>
 #include <chrono>
+#include <ostream>
 #include <string>
 
 #include "envoy/http/header_map.h"
@@ -125,12 +126,69 @@ bool operator==(const ResponseCacheControl& lhs, const ResponseCacheControl& rhs
          (lhs.is_public_ == rhs.is_public_) && (lhs.max_age_ == rhs.max_age_);
 }
 
+std::ostream& operator<<(std::ostream& os, const RequestCacheControl& request_cache_control) {
+  std::vector<std::string> fields;
+
+  if (request_cache_control.must_validate_) {
+    fields.push_back("must_validate");
+  }
+  if (request_cache_control.no_store_) {
+    fields.push_back("no_store");
+  }
+  if (request_cache_control.no_transform_) {
+    fields.push_back("no_transform");
+  }
+  if (request_cache_control.only_if_cached_) {
+    fields.push_back("only_if_cached");
+  }
+  if (request_cache_control.max_age_.has_value()) {
+    fields.push_back(
+        absl::StrCat("max-age=", std::to_string(request_cache_control.max_age_->count())));
+  }
+  if (request_cache_control.min_fresh_.has_value()) {
+    fields.push_back(
+        absl::StrCat("min-fresh=", std::to_string(request_cache_control.min_fresh_->count())));
+  }
+  if (request_cache_control.max_stale_.has_value()) {
+    fields.push_back(
+        absl::StrCat("max-stale=", std::to_string(request_cache_control.max_stale_->count())));
+  }
+
+  return os << "{" << absl::StrJoin(fields, ", ") << "}";
+}
+
+std::ostream& operator<<(std::ostream& os, const ResponseCacheControl& response_cache_control) {
+  std::vector<std::string> fields;
+
+  if (response_cache_control.must_validate_) {
+    fields.push_back("must_validate");
+  }
+  if (response_cache_control.no_store_) {
+    fields.push_back("no_store");
+  }
+  if (response_cache_control.no_transform_) {
+    fields.push_back("no_transform");
+  }
+  if (response_cache_control.no_stale_) {
+    fields.push_back("no_stale");
+  }
+  if (response_cache_control.is_public_) {
+    fields.push_back("public");
+  }
+  if (response_cache_control.max_age_.has_value()) {
+    fields.push_back(
+        absl::StrCat("max-age=", std::to_string(response_cache_control.max_age_->count())));
+  }
+
+  return os << "{" << absl::StrJoin(fields, ", ") << "}";
+}
+
 SystemTime CacheHeadersUtils::httpTime(const Http::HeaderEntry* header_entry) {
   if (!header_entry) {
     return {};
   }
   absl::Time time;
-  const std::string input(header_entry->value().getStringView());
+  const absl::string_view input(header_entry->value().getStringView());
 
   // Acceptable Date/Time Formats per:
   // https://tools.ietf.org/html/rfc7231#section-7.1.1.1
@@ -138,10 +196,10 @@ SystemTime CacheHeadersUtils::httpTime(const Http::HeaderEntry* header_entry) {
   // Sun, 06 Nov 1994 08:49:37 GMT    ; IMF-fixdate.
   // Sunday, 06-Nov-94 08:49:37 GMT   ; obsolete RFC 850 format.
   // Sun Nov  6 08:49:37 1994         ; ANSI C's asctime() format.
-  static const char* rfc7231_date_formats[] = {"%a, %d %b %Y %H:%M:%S GMT",
-                                               "%A, %d-%b-%y %H:%M:%S GMT", "%a %b %e %H:%M:%S %Y"};
+  static constexpr absl::string_view rfc7231_date_formats[] = {
+      "%a, %d %b %Y %H:%M:%S GMT", "%A, %d-%b-%y %H:%M:%S GMT", "%a %b %e %H:%M:%S %Y"};
 
-  for (const std::string& format : rfc7231_date_formats) {
+  for (absl::string_view format : rfc7231_date_formats) {
     if (absl::ParseTime(format, input, &time, nullptr)) {
       return ToChronoTime(time);
     }
@@ -218,23 +276,21 @@ std::vector<absl::string_view>
 CacheHeadersUtils::parseCommaDelimitedHeader(const Http::HeaderMap::GetResult& entry) {
   std::vector<absl::string_view> values;
   for (size_t i = 0; i < entry.size(); ++i) {
-    for (absl::string_view s : absl::StrSplit(entry[i]->value().getStringView(), ',')) {
-      if (s.empty()) {
-        continue;
-      }
-      values.emplace_back(absl::StripAsciiWhitespace(s));
-    }
+    std::vector<absl::string_view> tokens =
+        Http::HeaderUtility::parseCommaDelimitedHeader(entry[i]->value().getStringView());
+    values.insert(values.end(), tokens.begin(), tokens.end());
   }
   return values;
 }
 
 VaryAllowList::VaryAllowList(
-    const Protobuf::RepeatedPtrField<envoy::type::matcher::v3::StringMatcher>& allow_list) {
+    const Protobuf::RepeatedPtrField<envoy::type::matcher::v3::StringMatcher>& allow_list,
+    Server::Configuration::CommonFactoryContext& context) {
 
   for (const auto& rule : allow_list) {
     allow_list_.emplace_back(
         std::make_unique<Matchers::StringMatcherImpl<envoy::type::matcher::v3::StringMatcher>>(
-            rule));
+            rule, context));
   }
 }
 
@@ -291,7 +347,7 @@ VaryHeaderUtils::getVaryValues(const Http::ResponseHeaderMap& headers) {
 
   std::vector<absl::string_view> values =
       CacheHeadersUtils::parseCommaDelimitedHeader(vary_headers);
-  return absl::btree_set<absl::string_view>(values.begin(), values.end());
+  return {values.begin(), values.end()};
 }
 
 namespace {

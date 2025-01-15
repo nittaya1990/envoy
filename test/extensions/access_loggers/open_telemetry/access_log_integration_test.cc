@@ -33,8 +33,8 @@ constexpr char EXPECTED_REQUEST_MESSAGE[] = R"EOF(
           - key: "node_name"
             value:
               string_value: "node_name"
-      instrumentation_library_logs:
-        - logs:
+      scope_logs:
+        - log_records:
             body:
               string_value: "GET HTTP/1.1 404"
             attributes:
@@ -49,7 +49,12 @@ namespace {
 class AccessLogIntegrationTest : public Grpc::GrpcClientIntegrationParamTest,
                                  public HttpIntegrationTest {
 public:
-  AccessLogIntegrationTest() : HttpIntegrationTest(Http::CodecType::HTTP1, ipVersion()) {}
+  AccessLogIntegrationTest() : HttpIntegrationTest(Http::CodecType::HTTP1, ipVersion()) {
+    // TODO(ggreenway): add tag extraction rules.
+    // Missing stat tag-extraction rule for stat 'grpc.accesslog.streams_closed_1' and stat_prefix
+    // 'accesslog'.
+    skip_tag_extraction_rule_check_ = true;
+  }
 
   void createUpstreams() override {
     HttpIntegrationTest::createUpstreams();
@@ -113,12 +118,16 @@ public:
     TestUtility::loadFromYaml(expected_request_msg_yaml, expected_request_msg);
     // Clear start time which is not deterministic.
     request_msg.mutable_resource_logs(0)
-        ->mutable_instrumentation_library_logs(0)
-        ->mutable_logs(0)
+        ->mutable_scope_logs(0)
+        ->mutable_log_records(0)
         ->clear_time_unix_nano();
 
     EXPECT_TRUE(TestUtility::protoEqual(request_msg, expected_request_msg,
                                         /*ignore_repeated_field_ordering=*/false));
+    opentelemetry::proto::collector::logs::v1::ExportLogsServiceResponse response;
+    access_log_request_->startGrpcStream();
+    access_log_request_->sendGrpcMessage(response);
+    access_log_request_->finishGrpcStream(Grpc::Status::Ok);
     return AssertionSuccess();
   }
 
@@ -146,35 +155,77 @@ TEST_P(AccessLogIntegrationTest, BasicAccessLogFlow) {
   ASSERT_TRUE(waitForAccessLogStream());
   ASSERT_TRUE(waitForAccessLogRequest(EXPECTED_REQUEST_MESSAGE));
 
+  // Make another request and expect a new stream to be used.
   BufferingStreamDecoderPtr response = IntegrationUtil::makeSingleRequest(
       lookupPort("http"), "GET", "/notfound", "", downstream_protocol_, version_);
-  EXPECT_TRUE(response->complete());
-  EXPECT_EQ("404", response->headers().getStatusValue());
-  ASSERT_TRUE(waitForAccessLogRequest(EXPECTED_REQUEST_MESSAGE));
-
-  // Send an empty response and end the stream. This should never happen but make sure nothing
-  // breaks and we make a new stream on a follow up request.
-  access_log_request_->startGrpcStream();
-  opentelemetry::proto::collector::logs::v1::ExportLogsServiceResponse response_msg;
-  access_log_request_->sendGrpcMessage(response_msg);
-  access_log_request_->finishGrpcStream(Grpc::Status::Ok);
-  switch (clientType()) {
-  case Grpc::ClientType::EnvoyGrpc:
-    test_server_->waitForGaugeEq("cluster.accesslog.upstream_rq_active", 0);
-    break;
-  case Grpc::ClientType::GoogleGrpc:
-    test_server_->waitForCounterGe("grpc.accesslog.streams_closed_0", 1);
-    break;
-  default:
-    NOT_REACHED_GCOVR_EXCL_LINE;
-  }
-  response = IntegrationUtil::makeSingleRequest(lookupPort("http"), "GET", "/notfound", "",
-                                                downstream_protocol_, version_);
   EXPECT_TRUE(response->complete());
   EXPECT_EQ("404", response->headers().getStatusValue());
   ASSERT_TRUE(waitForAccessLogStream());
   ASSERT_TRUE(waitForAccessLogRequest(EXPECTED_REQUEST_MESSAGE));
   cleanup();
+}
+
+TEST_P(AccessLogIntegrationTest, AccessLoggerStatsAreIndependentOfListener) {
+  const std::string expected_access_log_results = R"EOF(
+    resource_logs:
+      resource:
+        attributes:
+          - key: "log_name"
+            value:
+              string_value: "foo"
+          - key: "zone_name"
+            value:
+              string_value: "zone_name"
+          - key: "cluster_name"
+            value:
+              string_value: "cluster_name"
+          - key: "node_name"
+            value:
+              string_value: "node_name"
+      scope_logs:
+        - log_records:
+            body:
+              string_value: "GET HTTP/1.1 200"
+            attributes:
+              - key: "response_code_details"
+                value:
+                  string_value: "via_upstream"
+  )EOF";
+  autonomous_upstream_ = true;
+  initialize();
+  codec_client_ = makeHttpConnection(lookupPort("http"));
+  auto response1 = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
+  ASSERT_TRUE(response1->waitForEndStream());
+  ASSERT_TRUE(waitForAccessLogConnection());
+  ASSERT_TRUE(waitForAccessLogStream());
+  ASSERT_TRUE(waitForAccessLogRequest(expected_access_log_results));
+
+  // LDS update to modify the listener and corresponding drain.
+  // The config has the same GRPC access logger so it is not removed from the
+  // cache.
+  {
+    ConfigHelper new_config_helper(version_, config_helper_.bootstrap());
+    new_config_helper.addConfigModifier(
+        [](envoy::config::bootstrap::v3::Bootstrap& bootstrap) -> void {
+          auto* listener = bootstrap.mutable_static_resources()->mutable_listeners(0);
+          listener->mutable_listener_filters_timeout()->set_seconds(10);
+        });
+    new_config_helper.setLds("1");
+    ASSERT_TRUE(codec_client_->waitForDisconnect());
+    test_server_->waitForGaugeEq("listener_manager.total_listeners_active", 1);
+  }
+
+  // Make another request, the existing grpc access logger should be used.
+  auto codec_client_ = makeHttpConnection(lookupPort("http"));
+  auto response2 = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
+  ASSERT_TRUE(response2->waitForEndStream());
+
+  ASSERT_TRUE(waitForAccessLogStream());
+  ASSERT_TRUE(waitForAccessLogRequest(expected_access_log_results));
+  codec_client_->close();
+  cleanup();
+
+  test_server_->waitForCounterEq("access_logs.open_telemetry_access_log.logs_written", 2);
 }
 
 } // namespace

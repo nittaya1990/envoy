@@ -75,8 +75,7 @@ double AdmissionControlFilterConfig::maxRejectionProbability() const {
 
 AdmissionControlFilter::AdmissionControlFilter(AdmissionControlFilterConfigSharedPtr config,
                                                const std::string& stats_prefix)
-    : config_(std::move(config)), stats_(generateStats(config_->scope(), stats_prefix)),
-      record_request_(true) {}
+    : config_(std::move(config)), stats_(generateStats(config_->scope(), stats_prefix)) {}
 
 Http::FilterHeadersStatus AdmissionControlFilter::decodeHeaders(Http::RequestHeaderMap&, bool) {
   if (!config_->filterEnabled() || decoder_callbacks_->streamInfo().healthCheck()) {
@@ -99,7 +98,7 @@ Http::FilterHeadersStatus AdmissionControlFilter::decodeHeaders(Http::RequestHea
 
     stats_.rq_rejected_.inc();
     decoder_callbacks_->sendLocalReply(Http::Code::ServiceUnavailable, "", nullptr, absl::nullopt,
-                                       "denied by admission control");
+                                       "denied_by_admission_control");
     return Http::FilterHeadersStatus::StopIteration;
   }
 

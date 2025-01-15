@@ -23,6 +23,22 @@ namespace {
 TEST(RouterFilterConfigTest, SimpleRouterFilterConfig) {
   const std::string yaml_string = R"EOF(
   dynamic_stats: true
+  )EOF";
+
+  envoy::extensions::filters::http::router::v3::Router proto_config;
+  TestUtility::loadFromYaml(yaml_string, proto_config);
+  NiceMock<Server::Configuration::MockFactoryContext> context;
+  RouterFilterConfig factory;
+  Http::FilterFactoryCb cb =
+      factory.createFilterFactoryFromProto(proto_config, "stats.", context).value();
+  Http::MockFilterChainFactoryCallbacks filter_callback;
+  EXPECT_CALL(filter_callback, addStreamDecoderFilter(_));
+  cb(filter_callback);
+}
+
+TEST(RouterFilterConfigTest, DEPRECATED_FEATURE_TEST(SimpleRouterFilterConfigWithChildSpan)) {
+  const std::string yaml_string = R"EOF(
+  dynamic_stats: true
   start_child_span: true
   )EOF";
 
@@ -30,7 +46,8 @@ TEST(RouterFilterConfigTest, SimpleRouterFilterConfig) {
   TestUtility::loadFromYaml(yaml_string, proto_config);
   NiceMock<Server::Configuration::MockFactoryContext> context;
   RouterFilterConfig factory;
-  Http::FilterFactoryCb cb = factory.createFilterFactoryFromProto(proto_config, "stats.", context);
+  Http::FilterFactoryCb cb =
+      factory.createFilterFactoryFromProto(proto_config, "stats.", context).value();
   Http::MockFilterChainFactoryCallbacks filter_callback;
   EXPECT_CALL(filter_callback, addStreamDecoderFilter(_));
   cb(filter_callback);
@@ -43,8 +60,7 @@ TEST(RouterFilterConfigTest, BadRouterFilterConfig) {
   )EOF";
 
   envoy::extensions::filters::http::router::v3::Router proto_config;
-  EXPECT_THROW_WITH_REGEX(TestUtility::loadFromYaml(yaml_string, proto_config), EnvoyException,
-                          "route: Cannot find field");
+  EXPECT_THROW(TestUtility::loadFromYaml(yaml_string, proto_config), EnvoyException);
 }
 
 TEST(RouterFilterConfigTest, RouterFilterWithUnsupportedStrictHeaderCheck) {
@@ -59,7 +75,7 @@ TEST(RouterFilterConfigTest, RouterFilterWithUnsupportedStrictHeaderCheck) {
   NiceMock<Server::Configuration::MockFactoryContext> context;
   RouterFilterConfig factory;
   EXPECT_THROW_WITH_REGEX(
-      factory.createFilterFactoryFromProto(router_config, "stats.", context),
+      factory.createFilterFactoryFromProto(router_config, "stats.", context).value(),
       ProtoValidationException,
       "Proto constraint validation failed \\(RouterValidationError.StrictCheckHeaders");
 }
@@ -70,7 +86,8 @@ TEST(RouterFilterConfigTest, RouterV2Filter) {
 
   NiceMock<Server::Configuration::MockFactoryContext> context;
   RouterFilterConfig factory;
-  Http::FilterFactoryCb cb = factory.createFilterFactoryFromProto(router_config, "stats.", context);
+  Http::FilterFactoryCb cb =
+      factory.createFilterFactoryFromProto(router_config, "stats.", context).value();
   Http::MockFilterChainFactoryCallbacks filter_callback;
   EXPECT_CALL(filter_callback, addStreamDecoderFilter(_));
   cb(filter_callback);
@@ -80,21 +97,11 @@ TEST(RouterFilterConfigTest, RouterFilterWithEmptyProtoConfig) {
   NiceMock<Server::Configuration::MockFactoryContext> context;
   RouterFilterConfig factory;
   Http::FilterFactoryCb cb =
-      factory.createFilterFactoryFromProto(*factory.createEmptyConfigProto(), "stats.", context);
+      factory.createFilterFactoryFromProto(*factory.createEmptyConfigProto(), "stats.", context)
+          .value();
   Http::MockFilterChainFactoryCallbacks filter_callback;
   EXPECT_CALL(filter_callback, addStreamDecoderFilter(_));
   cb(filter_callback);
-}
-
-// Test that the deprecated extension name is disabled by default.
-// TODO(zuercher): remove when envoy.deprecated_features.allow_deprecated_extension_names is removed
-TEST(RouterFilterConfigTest, DEPRECATED_FEATURE_TEST(DeprecatedExtensionFilterName)) {
-  const std::string deprecated_name = "envoy.router";
-
-  ASSERT_EQ(
-      nullptr,
-      Registry::FactoryRegistry<Server::Configuration::NamedHttpFilterConfigFactory>::getFactory(
-          deprecated_name));
 }
 
 } // namespace

@@ -21,7 +21,12 @@ namespace {
 class MetricsServiceIntegrationTest : public Grpc::GrpcClientIntegrationParamTest,
                                       public HttpIntegrationTest {
 public:
-  MetricsServiceIntegrationTest() : HttpIntegrationTest(Http::CodecType::HTTP1, ipVersion()) {}
+  MetricsServiceIntegrationTest() : HttpIntegrationTest(Http::CodecType::HTTP1, ipVersion()) {
+    // TODO(ggreenway): add tag extraction rules.
+    // Missing stat tag-extraction rule for stat 'grpc.metrics_service.streams_closed_14' and
+    // stat_prefix 'metrics_service'.
+    skip_tag_extraction_rule_check_ = true;
+  }
 
   void createUpstreams() override {
     HttpIntegrationTest::createUpstreams();
@@ -179,7 +184,7 @@ TEST_P(MetricsServiceIntegrationTest, BasicFlow) {
     test_server_->waitForCounterGe("grpc.metrics_service.streams_closed_0", 1);
     break;
   default:
-    NOT_REACHED_GCOVR_EXCL_LINE;
+    PANIC("reached unexpected code");
   }
   cleanup();
 }

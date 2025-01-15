@@ -14,10 +14,11 @@
 namespace Envoy {
 namespace {
 
-class WeightedClusterIntegrationTest : public testing::Test, public HttpIntegrationTest {
+class WeightedClusterIntegrationTest : public testing::TestWithParam<Network::Address::IpVersion>,
+                                       public HttpIntegrationTest {
 public:
   WeightedClusterIntegrationTest()
-      : HttpIntegrationTest(Http::CodecClient::Type::HTTP2, Network::Address::IpVersion::v6) {}
+      : HttpIntegrationTest(Http::CodecClient::Type::HTTP2, GetParam()) {}
 
   void createUpstreams() override {
     setUpstreamProtocol(FakeHttpConnection::Type::HTTP2);
@@ -59,9 +60,6 @@ public:
           cluster = weighted_clusters->add_clusters();
           cluster->set_cluster_header(std::string(Envoy::RepickClusterFilter::ClusterHeaderName));
           cluster->mutable_weight()->set_value(weights[1]);
-
-          weighted_clusters->mutable_total_weight()->set_value(
-              std::accumulate(weights.begin(), weights.end(), 0UL));
         });
 
     HttpIntegrationTest::initialize();
@@ -82,27 +80,36 @@ public:
     // Send the request headers from the client, wait until they are received
     // upstream. When they are received, send the default response headers from
     // upstream and wait until they are received at by client.
-    IntegrationStreamDecoderPtr response = sendRequestAndWaitForResponse(
-        request_headers, 0, default_response_headers_, 0, upstream_indices);
+    Result result = sendRequestAndWaitForResponse(request_headers, 0, default_response_headers_, 0,
+                                                  upstream_indices);
 
     // Verify the proxied request was received upstream, as expected.
     EXPECT_TRUE(upstream_request_->complete());
     EXPECT_EQ(0U, upstream_request_->bodyLength());
     // Verify the proxied response was received downstream, as expected.
-    EXPECT_TRUE(response->complete());
-    EXPECT_EQ("200", response->headers().getStatusValue());
-    EXPECT_EQ(0U, response->body().size());
+    EXPECT_TRUE(result.response->complete());
+    EXPECT_EQ("200", result.response->headers().getStatusValue());
+    EXPECT_EQ(0U, result.response->body().size());
 
     // Perform the clean-up.
     cleanupUpstreamAndDownstream();
+
+    // Make sure Envoy saw upstream connection close.
+    std::string target_name =
+        absl::StrFormat("cluster.cluster_%d.upstream_cx_active", result.upstream_index.value());
+    test_server_->waitForGaugeEq(target_name, 0);
   }
 
 private:
   std::vector<uint64_t> default_weights_ = {20, 30};
 };
 
+INSTANTIATE_TEST_SUITE_P(IpVersions, WeightedClusterIntegrationTest,
+                         testing::ValuesIn(TestEnvironment::getIpVersionsForTest()),
+                         TestUtility::ipTestParamsToString);
+
 // Steer the traffic (i.e. send the request) to the weighted cluster with `name` specified.
-TEST_F(WeightedClusterIntegrationTest, SteerTrafficToOneClusterWithName) {
+TEST_P(WeightedClusterIntegrationTest, SteerTrafficToOneClusterWithName) {
   setDeterministicValue();
   initializeConfig(getDefaultWeights());
 
@@ -116,7 +123,7 @@ TEST_F(WeightedClusterIntegrationTest, SteerTrafficToOneClusterWithName) {
 
 // Steer the traffic (i.e. send the request) to the weighted cluster with `cluster_header`
 // specified.
-TEST_F(WeightedClusterIntegrationTest, SteerTrafficToOneClusterWithHeader) {
+TEST_P(WeightedClusterIntegrationTest, SteerTrafficToOneClusterWithHeader) {
   const std::vector<uint64_t>& default_weights = getDefaultWeights();
 
   // The index of the cluster with `cluster_header` specified is 1.
@@ -139,7 +146,7 @@ TEST_F(WeightedClusterIntegrationTest, SteerTrafficToOneClusterWithHeader) {
 }
 
 // Steer the traffic (i.e. send the request) to the weighted clusters randomly based on weight.
-TEST_F(WeightedClusterIntegrationTest, SplitTrafficRandomly) {
+TEST_P(WeightedClusterIntegrationTest, SplitTrafficRandomly) {
   std::vector<uint64_t> weights = {50, 50};
   int upstream_count = weights.size();
   initializeConfig(weights);

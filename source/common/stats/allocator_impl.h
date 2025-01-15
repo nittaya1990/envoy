@@ -2,9 +2,10 @@
 
 #include <vector>
 
+#include "envoy/common/optref.h"
 #include "envoy/stats/allocator.h"
+#include "envoy/stats/sink.h"
 #include "envoy/stats/stats.h"
-#include "envoy/stats/symbol_table.h"
 
 #include "source/common/common/thread_synchronizer.h"
 #include "source/common/stats/metric_impl.h"
@@ -33,15 +34,17 @@ public:
   SymbolTable& symbolTable() override { return symbol_table_; }
   const SymbolTable& constSymbolTable() const override { return symbol_table_; }
 
-  void forEachCounter(std::function<void(std::size_t)>,
-                      std::function<void(Stats::Counter&)>) const override;
+  void forEachCounter(SizeFn, StatFn<Counter>) const override;
 
-  void forEachGauge(std::function<void(std::size_t)>,
-                    std::function<void(Stats::Gauge&)>) const override;
+  void forEachGauge(SizeFn, StatFn<Gauge>) const override;
 
-  void forEachTextReadout(std::function<void(std::size_t)>,
-                          std::function<void(Stats::TextReadout&)>) const override;
+  void forEachTextReadout(SizeFn, StatFn<TextReadout>) const override;
 
+  void forEachSinkedCounter(SizeFn f_size, StatFn<Counter> f_stat) const override;
+  void forEachSinkedGauge(SizeFn f_size, StatFn<Gauge> f_stat) const override;
+  void forEachSinkedTextReadout(SizeFn f_size, StatFn<TextReadout> f_stat) const override;
+
+  void setSinkPredicates(std::unique_ptr<SinkPredicates>&& sink_predicates) override;
 #ifndef ENVOY_CONFIG_COVERAGE
   void debugPrint();
 #endif
@@ -81,6 +84,18 @@ private:
   StatSet<Gauge> gauges_ ABSL_GUARDED_BY(mutex_);
   StatSet<TextReadout> text_readouts_ ABSL_GUARDED_BY(mutex_);
 
+  template <typename StatType> using StatPointerSet = absl::flat_hash_set<StatType*>;
+  // Stat pointers that participate in the flush to sink process.
+  StatPointerSet<Counter> sinked_counters_ ABSL_GUARDED_BY(mutex_);
+  StatPointerSet<Gauge> sinked_gauges_ ABSL_GUARDED_BY(mutex_);
+  StatPointerSet<TextReadout> sinked_text_readouts_ ABSL_GUARDED_BY(mutex_);
+
+  // Predicates used to filter stats to be flushed.
+  std::unique_ptr<SinkPredicates> sink_predicates_;
+  SymbolTable& symbol_table_;
+
+  Thread::ThreadSynchronizer sync_;
+
   // Retain storage for deleted stats; these are no longer in maps because
   // the matcher-pattern was established after they were created. Since the
   // stats are held by reference in code that expects them to be there, we
@@ -92,10 +107,6 @@ private:
   std::vector<CounterSharedPtr> deleted_counters_ ABSL_GUARDED_BY(mutex_);
   std::vector<GaugeSharedPtr> deleted_gauges_ ABSL_GUARDED_BY(mutex_);
   std::vector<TextReadoutSharedPtr> deleted_text_readouts_ ABSL_GUARDED_BY(mutex_);
-
-  SymbolTable& symbol_table_;
-
-  Thread::ThreadSynchronizer sync_;
 };
 
 } // namespace Stats

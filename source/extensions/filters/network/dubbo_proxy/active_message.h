@@ -41,7 +41,7 @@ public:
 
   // ResponseDecoderCallbacks
   StreamHandler& newStream() override { return *this; }
-  void onHeartbeat(MessageMetadataSharedPtr) override { NOT_IMPLEMENTED_GCOVR_EXCL_LINE; }
+  void onHeartbeat(MessageMetadataSharedPtr) override {}
 
   uint64_t requestId() const { return metadata_ ? metadata_->requestId() : 0; }
 
@@ -55,7 +55,8 @@ private:
   ResponseDecoderPtr decoder_;
   MessageMetadataSharedPtr metadata_;
   bool complete_ : 1;
-  DubboFilters::UpstreamResponseStatus response_status_;
+  DubboFilters::UpstreamResponseStatus response_status_{
+      DubboFilters::UpstreamResponseStatus::MoreData};
 };
 
 using ActiveResponseDecoderPtr = std::unique_ptr<ActiveResponseDecoder>;

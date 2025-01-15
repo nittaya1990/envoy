@@ -11,8 +11,6 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-using ::testing::Eq;
-
 namespace Envoy {
 namespace Extensions {
 namespace Tracers {
@@ -65,15 +63,6 @@ TEST(ZipkinTracerConfigTest, ZipkinHttpTracerWithTypedConfig) {
       configuration.http(), ProtobufMessage::getStrictValidationVisitor(), factory);
   auto zipkin_tracer = factory.createTracerDriver(*message, context);
   EXPECT_NE(nullptr, zipkin_tracer);
-}
-
-// Test that the deprecated extension name is disabled by default.
-// TODO(zuercher): remove when envoy.deprecated_features.allow_deprecated_extension_names is removed
-TEST(ZipkinTracerConfigTest, DEPRECATED_FEATURE_TEST(DeprecatedExtensionFilterName)) {
-  const std::string deprecated_name = "envoy.zipkin";
-
-  ASSERT_EQ(nullptr, Registry::FactoryRegistry<Server::Configuration::TracerFactory>::getFactory(
-                         deprecated_name));
 }
 
 } // namespace
